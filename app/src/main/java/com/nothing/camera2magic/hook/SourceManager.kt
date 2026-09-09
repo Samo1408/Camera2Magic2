@@ -133,7 +133,6 @@ object SourceManager {
             enableLog = prefs.getBoolean(KEY_ENABLE_LOG, false)
             showToast = prefs.getBoolean(KEY_SHOW_TOAST, true)
             manuallyRotate = runCatching { prefs.getInt("main_manually_rotate", 0) }.getOrDefault(0)
-            Dog.w(TAG, "refreshPrefs: manuallyRotate=$manuallyRotate", true)
 
             hookEnabledPackages = prefs.getString(KEY_HOOK_ENABLED_PACKAGES, "")?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
 
@@ -151,8 +150,13 @@ object SourceManager {
                 }
             }
 
-            Dog.i(TAG, "refreshPrefs: hookEnabledPackages=$hookEnabledPackages")
-
+            // 配置解析的唯一可观测点。例行日志必须受 main_enable_log 门控，禁止改常开——
+            // 那会在目标进程 logcat 里留下关不掉的被 hook 指纹
+            Dog.i(
+                TAG,
+                "refreshPrefs: process=$pkg, hookEnabled=$appHookEnabled, media=${validMedia?.type?.label ?: "none"}, rotate=$manuallyRotate, packages=$hookEnabledPackages",
+                enableLog,
+            )
         } catch (e: Exception) { /* Do Nothing */ }
     }
 }

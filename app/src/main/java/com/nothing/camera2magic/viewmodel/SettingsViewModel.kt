@@ -5,7 +5,6 @@ import androidx.lifecycle.ViewModel
 import com.nothing.camera2magic.ui.theme.ThemeConfig
 import com.nothing.camera2magic.ui.theme.readThemeConfig
 import com.nothing.camera2magic.ui.theme.writeThemeConfig
-import com.nothing.camera2magic.utils.Dog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -54,7 +53,6 @@ class SettingsViewModel(
 
     fun onEnableLogChanged(value: Boolean) {
         repository.enableLog = value
-        Dog.enabled = value
         _uiState.update { it.copy(enableLog = value) }
     }
 

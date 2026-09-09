@@ -202,7 +202,7 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
                                             jpeg = tmpFile.readBytes()
                                             // 最终文件仍可能因 EXIF 段超容量：此时放弃 EXIF，保证照片完整可解码
                                             if (jpeg.size > cap) {
-                                                Dog.w(TAG, "EXIF pushed JPEG over buffer, dropping EXIF: ${jpeg.size} > $cap", true)
+                                                Dog.w(TAG, "EXIF pushed JPEG over buffer, dropping EXIF: ${jpeg.size} > $cap", SM.enableLog)
                                                 jpeg = compressed
                                             }
                                             cachedJpegKey = cacheKey
@@ -220,10 +220,10 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
                     }
                 }
             }.onFailure { e ->
-                Dog.e(TAG, "JPEG replacement failed: ${e.message}", e, true)
+                Dog.e(TAG, "JPEG replacement failed: ${e.message}", e, SM.enableLog)
             }
             if (jpeg == null || jpeg.isEmpty()) {
-                Dog.e(TAG, "Failed to get replacement JPEG for format 256", null, true)
+                Dog.e(TAG, "Failed to get replacement JPEG for format 256", null, SM.enableLog)
                 return image
             }
             try {
@@ -263,7 +263,7 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
                     }
                     Dog.i(TAG, "JPEG overwritten via Unsafe, size=$written", SM.enableLog)
                 } catch (e2: Exception) {
-                    Dog.e(TAG, "Unsafe also failed: ${e2.message}", e2, true)
+                    Dog.e(TAG, "Unsafe also failed: ${e2.message}", e2, SM.enableLog)
                 }
             }
             return image
@@ -301,7 +301,7 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
         magic.hook(acquireNextImage).intercept { chain ->
             val image = chain.proceed() as? Image ?: return@intercept null
             runCatching { handleImage(image) }
-                .onFailure { Dog.e(TAG, "handleImage failed: ${it.message}", it, true) }
+                .onFailure { Dog.e(TAG, "handleImage failed: ${it.message}", it, SM.enableLog) }
             return@intercept image
         }
     }
@@ -311,7 +311,7 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
         magic.hook(acquireLatestImage).intercept { chain ->
             val image = chain.proceed() as? Image ?: return@intercept null
             runCatching { handleImage(image) }
-                .onFailure { Dog.e(TAG, "handleImage failed: ${it.message}", it, true) }
+                .onFailure { Dog.e(TAG, "handleImage failed: ${it.message}", it, SM.enableLog) }
             return@intercept image
         }
     }
@@ -321,7 +321,7 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
         magic.hook(acquireNextImageNoThrowISE).intercept { chain ->
             val image = chain.proceed() as? Image ?: return@intercept null
             runCatching { handleImage(image) }
-                .onFailure { Dog.e(TAG, "handleImage failed: ${it.message}", it, true) }
+                .onFailure { Dog.e(TAG, "handleImage failed: ${it.message}", it, SM.enableLog) }
             return@intercept image
         }
     }

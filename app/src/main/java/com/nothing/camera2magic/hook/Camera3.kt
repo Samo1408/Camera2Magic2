@@ -84,7 +84,7 @@ class Camera3 {
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            Dog.e(TAG, "${error.errorCodeName} - ${error.message}", error, true)
+            Dog.e(TAG, "${error.errorCodeName} - ${error.message}", error, SM.enableLog)
             notifyState(State.ERROR)
         }
     }
@@ -176,7 +176,7 @@ class Camera3 {
             imageRendering = true
             camera3Handler.post(imageRenderRunnable)
         }.onFailure { e ->
-            Dog.e(TAG, "${e.message}", e, true)
+            Dog.e(TAG, "${e.message}", e, SM.enableLog)
         }
     }
 

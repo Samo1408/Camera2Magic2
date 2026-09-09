@@ -33,8 +33,7 @@ class HomeViewModel(
 
     init {
         loadInitialState()
-        Dog.enabled = repository.enableLog
-        Dog.i(TAG, "Camera2Magic started", repository.enableLog)
+        Dog.i(TAG, "Camera2Magic started")
         viewModelScope.launch {
             repository.xposedActive.collect { active ->
                 _uiState.update { it.copy(xposedActive = active) }

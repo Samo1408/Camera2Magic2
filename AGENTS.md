@@ -76,7 +76,7 @@ MainActivity → CompositionLocal         MagicHook.onPackageReady(param)
 - **门控语义**：`readyForHook = appHookEnabled`（仅 `app_hook_<pkg>` 一项）。总开关 `main_module_enabled` 已删除，模块级启停只在 LSPosed 里做。`hook_enabled_packages` 只做记录与同步、**不参与拦截门控**；「关闭某应用」由 `app_hook_<pkg>` 表达，「关闭媒体」由不选媒体表达。
 - **两个死开关**（UI 可见但 Hook 侧从不读，别当已生效功能引用）：`main_inject_menu`、`main_hook_mode`（首页那个 Camera1/2/3 选择器——四个 Hooker 在 `onPackageReady` 里是无条件全装的）。
 - **宿主专用键**：`app_photo_uri_<pkg>` / `app_video_uri_<pkg>` 只供 UI 展示原始 URI，Hook 侧读的是 `app_remote_*`。另外全部 11 个 `theme_*` 键也会被全量推到远程组里（`save`/`syncAllToRemote` 不按键过滤），Hook 侧忽略。
-- **持久化类型陷阱**：多数布尔/数值键以 **String** 存（`"true"`/`"1.0"`），非 String 的两个例外是 `theme_dark_mode`（**Int**）与 `theme_predictive_back`（**Boolean**）。读写都走 ConfigRepository 的属性就安全，别绕过它直接碰 prefs。唯一合法的例外是 `MainActivity.onCreate` 直读 `theme_predictive_back`——它必须早于 Compose 执行。
+- **持久化类型陷阱**：布尔/数值键的存储类型分两派——`main_play_sound`/`main_enable_log`/`main_show_toast`/`main_inject_menu`/`app_hook_<pkg>`/`theme_predictive_back` 以 **Boolean** 存，`main_manually_rotate`/`theme_dark_mode` 以 **Int** 存；其余布尔/数值键（`theme_pure_black`/`theme_monet`/`theme_blur`/`theme_floating_bottom_bar`/`theme_density_scale` 等）以 **String** 存。读写都走 ConfigRepository 的属性就安全，别绕过它直接碰 prefs。唯一合法的例外是 `MainActivity.onCreate` 直读 `theme_predictive_back`——它必须早于 Compose 执行。
 - `main_manually_rotate` 的实时生效靠 Hook 侧 `SourceManager.registerRotationListener()`（只筛这一个键 → `refreshPrefs()` + `applyManualRotationToNative()`）。listener 必须用字段强引用持住，SharedPreferences 只弱引用它。
 - **备份会造成两侧失同步**：manifest 里 `allowBackup=true`，本地 prefs 可被系统备份、远程 prefs 不行；恢复后要到下一次 `syncAllToRemote()` 才对齐。
 
@@ -120,7 +120,7 @@ MainActivity → CompositionLocal         MagicHook.onPackageReady(param)
 
 **国际化**：英文 + 简体中文（zh-rCN），文案分别进 `values/strings.xml` 与 `values-zh-rCN/strings.xml`；日志英文，代码注释中文。
 
-**日志的真实门控与 `main_enable_log` 不一致**：`Dog.enabled` 只在**宿主进程**被赋值（两个 ViewModel 里），Hook 进程从不设置它。所以 Hook 侧凡是显式传 `true` 的调用点会无视开关照常输出，而省略该参数的调用点（如 `SourceManager` 里那条 `hookEnabledPackages` 日志）在目标进程里永远打不出来。排查「开关关了还在打日志」先看这里。日志 tag 是 `VCX`，`adb logcat -s VCX:*`。
+**日志门控单开关**：全部日志（**含异常路径**）统一受 `main_enable_log` 控制——`Dog.enabled` 只在**宿主进程**被赋值，唯一赋值点是 `ConfigRepository`（init 从 prefs 恢复 + `enableLog` setter 实时更新），Hook 进程从不设置它。Hook 侧调用点必须显式传 `SM.enableLog`（`HookManager`/`WebRTCHooker` 用 `SourceManager.enableLog`），**省略参数 = 默认 `Dog.enabled` = 在目标进程永远 false，日志沦为死代码**；宿主侧 `ConfigRepository` 的日志省略参数依赖 `Dog.enabled`，是唯一合法用法。开关关闭 = 两侧 logcat 零输出，这是有意的隐蔽取舍：异常同样拿不到归因线索，排查时先开开关再复现。新增调用点禁止传 `true`——那是旧「异常常开」策略的残留，出现即漏改。日志 tag 是 `VCX`，`adb logcat -s VCX:*`；Hook 侧受控日志由 `Dog` 双写到 `XposedModule.log`（`moduleSink` 由 `MagicHook.onPackageReady` 注入，宿主进程恒 null，异常 stack 一并写入），在 **LSPosed 管理器 → 日志 → 模块日志** 可见，是免 adb 的查看通道。
 
 **root / su 路径**（应用配置页的强停与重启）：`Runtime.exec(arrayOf("su","-c",cmd))` 必须留在 IO 线程、必须判 exit code、必须消费两个流；无 root 要给明确提示而不是假装成功。「应用是否在运行」是扫 `/proc/<pid>/cmdline` 而非 `ps`，重启前有 5s 有界等待。媒体拷贝契约：远程文件名 `<photo|video>_<pkg>.<ext>`（由 MIME 推导），写入前 `channel.truncate(0)`，失败要同时回滚 URI 状态与提示，清除媒体前要先取消在途拷贝。
 

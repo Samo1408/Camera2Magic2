@@ -99,7 +99,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 val camera = chain.args[0] as CameraDevice
                 camera.updateBaseData()
                 Dog.w(TAG, "API[2] open camera: ${camera.shortId}", SM.enableLog)
-            }.onFailure { Dog.e(TAG, "onOpened failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "onOpened failed: ${it.message}", it, SM.enableLog) }
             return@intercept chain.proceed()
         }
     }
@@ -124,7 +124,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                     BlackHole.clear()
                     Dog.w(TAG, "API[2] close camera: ${camera.shortId}", SM.enableLog)
                 }
-            }.onFailure { Dog.e(TAG, "onClosed cleanup failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "onClosed cleanup failed: ${it.message}", it, SM.enableLog) }
 
             return@intercept chain.proceed()
         }
@@ -178,7 +178,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 }
                 // 会话配置完成时重新下发一次 base data，确保手动旋转生效
                 SM.applyManualRotationToNative()
-            }.onFailure { Dog.e(TAG, "onConfigured failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "onConfigured failed: ${it.message}", it, SM.enableLog) }
             return@intercept chain.proceed()
         }
     }
@@ -187,7 +187,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
             CameraCaptureSession::class.java)
 
         magic.hook(onConfigureFailed).intercept { chain ->
-            Dog.e(TAG, "CameraCaptureSession.StateCallback: onConfigureFailed.", null, true)
+            Dog.e(TAG, "CameraCaptureSession.StateCallback: onConfigureFailed.", null, SM.enableLog)
             chain.proceed()
         }
     }
@@ -229,7 +229,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                     }
                     field.set(outputConfiguration, modifiedSurfaces)
                 }
-            }.onFailure { Dog.e(TAG, "createCaptureSession(SessionConfiguration) failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "createCaptureSession(SessionConfiguration) failed: ${it.message}", it, SM.enableLog) }
             chain.proceed()
         }
     }
@@ -269,7 +269,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
 
                 chain.args.toTypedArray().also { it[0] = newList }
             }.onFailure {
-                Dog.e(TAG, "createCaptureSession(List<Surface>) failed: ${it.message}", it, true)
+                Dog.e(TAG, "createCaptureSession(List<Surface>) failed: ${it.message}", it, SM.enableLog)
             }.getOrNull() ?: return@intercept chain.proceed()
 
             chain.proceed(newArgs)
@@ -317,7 +317,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                     field.set(config, modifiedSurfaces)
                 }
             }.onFailure {
-                Dog.e(TAG, "createCaptureSessionByOutputConfigurations failed: ${it.message}", it, true)
+                Dog.e(TAG, "createCaptureSessionByOutputConfigurations failed: ${it.message}", it, SM.enableLog)
             }
             chain.proceed()
         }
@@ -342,7 +342,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 // 非预览面不换：它在会话创建阶段已被登记进 extraRenderTargets，
                 // 这里再登记一次没有意义（removeTarget 靠 getBlackHole 映射兜住两种模式）
                 null
-            }.onFailure { Dog.e(TAG, "addTarget failed: ${it.message}", it, true) }.getOrNull()
+            }.onFailure { Dog.e(TAG, "addTarget failed: ${it.message}", it, SM.enableLog) }.getOrNull()
 
             if (replacement != null) return@intercept chain.proceed(arrayOf(replacement))
             return@intercept chain.proceed()
@@ -360,7 +360,7 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 // 必须把 BlackHole 映射回原 Surface 再传给原实现，
                 // 传替换面会让原生引擎的目标表错乱
                 origin.getBlackHole ?: origin
-            }.onFailure { Dog.e(TAG, "removeTarget failed: ${it.message}", it, true) }.getOrNull()
+            }.onFailure { Dog.e(TAG, "removeTarget failed: ${it.message}", it, SM.enableLog) }.getOrNull()
 
             if (oab != null) return@intercept chain.proceed(arrayOf(oab))
             return@intercept chain.proceed()

@@ -111,7 +111,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 val params = chain.args[0] as Camera.Parameters
                 vSize = params.previewSize.toSize()
                 pSize = params.pictureSize.toSize()
-            }.onFailure { Dog.e(TAG, "setParameters record failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "setParameters record failed: ${it.message}", it, SM.enableLog) }
             return@intercept chain.proceed()
         }
     }
@@ -126,7 +126,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 surfaceTexture.setDefaultBufferSize(vSize.width, vSize.height)
                 chain.args.toTypedArray().also { it[0] = Surface(surfaceTexture).gocBlackHoleTexture }
             }.onFailure {
-                Dog.e(TAG, "setPreviewTexture failed: ${it.message}", it, true)
+                Dog.e(TAG, "setPreviewTexture failed: ${it.message}", it, SM.enableLog)
             }.getOrNull() ?: return@intercept chain.proceed()
             chain.proceed(newArgs)
         }
@@ -149,7 +149,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 } as SurfaceHolder
                 surfaceHolderProxy
             }.onFailure {
-                Dog.e(TAG, "setPreviewDisplay failed: ${it.message}", it, true)
+                Dog.e(TAG, "setPreviewDisplay failed: ${it.message}", it, SM.enableLog)
             }.getOrNull() ?: return@intercept chain.proceed()
 
             chain.proceed(arrayOf(proxy))
@@ -185,7 +185,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                         camera3.start(magic, it)
                     }
                 }
-            }.onFailure { Dog.e(TAG, "startPreview failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "startPreview failed: ${it.message}", it, SM.enableLog) }
             chain.proceed()
         }
     }
@@ -196,7 +196,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
             runCatching {
                 val camera = chain.thisObject as? Camera
                 if (camera != null && camera.isActiveRef) camera3Map[camera]?.pause()
-            }.onFailure { Dog.e(TAG, "stopPreview pause failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "stopPreview pause failed: ${it.message}", it, SM.enableLog) }
             chain.proceed()
         }
     }
@@ -213,7 +213,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                     camera3Map[camera]?.stop()
                 }
                 Dog.w(TAG, "API[1] close camera: ${camera.shortId}", SM.enableLog)
-            }.onFailure { Dog.e(TAG, "release cleanup failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "release cleanup failed: ${it.message}", it, SM.enableLog) }
             chain.proceed()
         }
     }
@@ -228,7 +228,7 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
             runCatching {
                 val originBuffer = frame.args[0] as ByteArray
                 NB.overwriteYuvBuffer(originBuffer)
-            }.onFailure { Dog.e(TAG, "onPreviewFrame overwrite failed: ${it.message}", it, true) }
+            }.onFailure { Dog.e(TAG, "onPreviewFrame overwrite failed: ${it.message}", it, SM.enableLog) }
             frame.proceed()
         }
     }

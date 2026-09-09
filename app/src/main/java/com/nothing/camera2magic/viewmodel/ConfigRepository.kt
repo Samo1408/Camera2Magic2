@@ -2,7 +2,6 @@ package com.nothing.camera2magic.viewmodel
 
 import android.content.SharedPreferences
 import android.net.Uri
-import android.util.Log
 import androidx.core.content.edit
 import com.nothing.camera2magic.utils.Dog
 import io.github.libxposed.service.XposedService
@@ -89,6 +88,9 @@ class ConfigRepository(private val prefs: SharedPreferences) {
 
     init {
         activePrefs = prefs
+        // Dog.enabled 的唯一赋值点（宿主进程）：init 从 prefs 恢复 + enableLog setter 实时更新，
+        // 使 companion serviceListener 的日志不再依赖 VM 创建时序
+        Dog.enabled = enableLog
         if (!listenerRegistered) {
             listenerRegistered = true
             XposedServiceHelper.registerListener(serviceListener)
@@ -156,7 +158,10 @@ class ConfigRepository(private val prefs: SharedPreferences) {
 
     var enableLog: Boolean
         get() = prefs.getBoolean("main_enable_log", false)
-        set(value) = save("main_enable_log", value)
+        set(value) {
+            save("main_enable_log", value)
+            Dog.enabled = value
+        }
 
     var showToast: Boolean
         get() = prefs.getBoolean("main_show_toast", true)
