@@ -174,7 +174,8 @@ class ImageReaderHooker(val magic: MagicHook, param: PackageReadyParam) : HookMa
                                         scaled.recycle()
 
                                         // Preserve original camera EXIF
-                                        val tmpFile = java.io.File(GlobalState.appContext.cacheDir, "cam2magic_tmp.jpg")
+                                        // 唯一文件名：两线程同时拍照各写各的临时文件，避免互踩（finally 里各自删除）
+                                        val tmpFile = java.io.File(GlobalState.appContext.cacheDir, "cam2magic_tmp_${System.nanoTime()}.jpg")
                                         try {
                                             tmpFile.writeBytes(compressed)
                                             val newExif = ExifInterface(tmpFile.getAbsolutePath())

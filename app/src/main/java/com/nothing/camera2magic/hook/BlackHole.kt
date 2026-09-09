@@ -2,6 +2,7 @@ package com.nothing.camera2magic.hook
 
 import android.graphics.SurfaceTexture
 import android.view.Surface
+import java.util.Collections
 import java.util.WeakHashMap
 
 object BlackHole {
@@ -16,10 +17,11 @@ object BlackHole {
         }
     }
 
-    @Volatile
-    private var _oab = WeakHashMap<Surface, BH>()
+    // 任意相机/binder 线程可触达，必须包 synchronizedMap；遍历点（clear/originSurfaces）
+    // 额外 synchronized(_oab)，Collections.synchronizedMap 只保证单次调用原子
+    private val _oab: MutableMap<Surface, BH> = Collections.synchronizedMap(WeakHashMap<Surface, BH>())
 
-    val oab: WeakHashMap<Surface, BH>
+    val oab: MutableMap<Surface, BH>
         get() = _oab
 
     @Volatile
@@ -34,7 +36,7 @@ object BlackHole {
         get() = getOrCreateBlackHole(this).surfaceTexture
 
     val originSurfaces: List<Surface>
-        get() = _oab.keys.filter { it != null && it.isValid }
+        get() = synchronized(_oab) { _oab.keys.filter { it != null && it.isValid } }
 
 
     private val Surface.hashCode: Int
@@ -45,12 +47,14 @@ object BlackHole {
 
     fun clear() {
         dummyTexId = 0x100
-        _oab.forEach { (origin, bh) ->
-            // 同步移除原生渲染目标，避免原生引擎继续往已 release 的 Surface 上渲染
-            runCatching { NativeBridge.removeRenderTarget(origin) }
-            bh?.release()
+        synchronized(_oab) {
+            _oab.forEach { (origin, bh) ->
+                // 同步移除原生渲染目标，避免原生引擎继续往已 release 的 Surface 上渲染
+                runCatching { NativeBridge.removeRenderTarget(origin) }
+                bh?.release()
+            }
+            _oab.clear()
         }
-        _oab.clear()
     }
 
     private fun createBlackHole(): BH {
@@ -64,7 +68,8 @@ object BlackHole {
     }
 
     private fun getOrCreateBlackHole(origin: Surface): BH {
-        return _oab.getOrPut(origin) { createBlackHole() }
+        // getOrPut 的 get+put 两步需要原子性，synchronizedMap 只保证单次调用
+        return synchronized(_oab) { _oab.getOrPut(origin) { createBlackHole() } }
     }
 
     private fun getBlackHole(origin: Surface): Surface? {

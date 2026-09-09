@@ -31,7 +31,8 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
         private const val CLS_CAMERA = "android.hardware.Camera"
         private var activatedCamera = WeakReference<Any>(null)
 
-        private val camera3Map = WeakHashMap<Any, Camera3>()
+        private val camera3Map: MutableMap<Any, Camera3> =
+            Collections.synchronizedMap(WeakHashMap<Any, Camera3>())
         ///////////
         private const val API = 1
         private var facingFront = false

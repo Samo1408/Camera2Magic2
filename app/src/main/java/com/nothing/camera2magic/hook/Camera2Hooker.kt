@@ -38,7 +38,8 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
         private const val CAMERA_MANAGER = "android.hardware.camera2.CameraManager"
         private const val CAPTURE_REQUEST_BUILDER = $$"android.hardware.camera2.CaptureRequest$Builder"
         private var activatedCamera = WeakReference<Any>(null)
-        private val camera3Map = WeakHashMap<Any, Camera3>()
+        private val camera3Map: MutableMap<Any, Camera3> =
+            Collections.synchronizedMap(WeakHashMap<Any, Camera3>())
         // 与 hookedClasses 一样必须同步：会话创建/addTarget 可能在相机线程写入，
         // 而 onClosed/onConfigured 会在另一线程遍历，裸 WeakHashMap 会抛 CME
         private val extraRenderTargets: MutableSet<Surface> =

@@ -18,14 +18,25 @@ class MagicDataSource(private val pfd: ParcelFileDescriptor) : BaseDataSource(/*
     private var opened = false
     private var bytesRemaining = 0L
 
+    // open() 时 dup 出的私有 fd 副本：并发 open 各自 lseek 各自的偏移互不踩位，
+    // close() 只关副本，原始 fd 的所有权留在 Camera3.releaseResources()
+    private var ownedPfd: ParcelFileDescriptor? = null
+
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
 
-        try {
-            Os.lseek(pfd.fileDescriptor, dataSpec.position, OsConstants.SEEK_SET)
-            fis = FileInputStream(pfd.fileDescriptor)
+        // 防御：上一次 open 未正常 close 时先回收旧副本，避免 dup 泄漏
+        runCatching { ownedPfd?.close() }
+        ownedPfd = null
+        fis = null
 
-            val totalLength = pfd.statSize
+        try {
+            val owned = ParcelFileDescriptor.dup(pfd.fileDescriptor)
+            ownedPfd = owned
+            Os.lseek(owned.fileDescriptor, dataSpec.position, OsConstants.SEEK_SET)
+            fis = FileInputStream(owned.fileDescriptor)
+
+            val totalLength = owned.statSize
             bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
                 dataSpec.length
             } else {
@@ -40,6 +51,10 @@ class MagicDataSource(private val pfd: ParcelFileDescriptor) : BaseDataSource(/*
             return bytesRemaining
 
         } catch (e: Exception) {
+            // dup 成功但后续失败的场合，把私有副本也关掉，不留半开 fd
+            runCatching { ownedPfd?.close() }
+            ownedPfd = null
+            fis = null
             throw java.io.IOException("Failed to open FD at position ${dataSpec.position}", e)
         }
     }
@@ -73,5 +88,7 @@ class MagicDataSource(private val pfd: ParcelFileDescriptor) : BaseDataSource(/*
             transferEnded()
         }
         fis = null
+        runCatching { ownedPfd?.close() }
+        ownedPfd = null
     }
 }

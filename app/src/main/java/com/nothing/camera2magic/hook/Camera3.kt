@@ -113,6 +113,10 @@ class Camera3 {
         camera3Handler.post {
             init()
             val (name, type) = validMedia
+            // 旧 fd 先关再赋新值：连续两次 start 之间没有 stop 时旧 fd 会泄漏。
+            // DataSource 在 open 时已 dup 私有副本，关它不影响仍在读的旧播放
+            runCatching { pfd?.close() }
+            pfd = null
             when (type) {
                 MagicType.LOCAL_VIDEO  -> {
                     pfd = magic.openRemoteFile(name)
