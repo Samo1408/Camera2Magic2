@@ -1,5 +1,6 @@
 package com.nothing.camera2magic.hook
 
+import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -38,6 +39,23 @@ class Camera3 {
 
     companion object {
         private const val TAG = "[Camera3]"
+
+        // 图片媒体解码预算：长边上限（横竖对称）。4K 是下游有用分辨率的天花板
+        // （native 缩放到输出端，输出最大 4K 录制），3840 同时保证低于最低保障的
+        // GL_MAX_TEXTURE_SIZE(4096)，避免 lockHardwareCanvas 超限静默失败变黑帧
+        private const val FRAME_LONG_EDGE = 3840
+        private const val FRAME_LONG_EDGE_LOW_RAM = 1920
+
+        // 帧重绘间隔 ≈30fps：仅驱动 OES 纹理持续更新，实际输出帧率由相机管线决定
+        private const val FRAME_INTERVAL_MS = 33L
+
+        // Hook 跑在目标应用进程，内存账算它的：低内存设备降档
+        private val frameLongEdge: Int by lazy {
+            runCatching {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                am?.isLowRamDevice == true
+            }.getOrDefault(false).let { if (it) FRAME_LONG_EDGE_LOW_RAM else FRAME_LONG_EDGE }
+        }
 
         private val camera3Handler = Camera3Extended.handler
 
@@ -167,7 +185,7 @@ class Camera3 {
 
             options.inJustDecodeBounds = false
             options.inPreferredConfig = Bitmap.Config.ARGB_8888
-            options.inSampleSize = calculateInSampleSize(options)
+            options.inSampleSize = calculateInSampleSize(options, frameLongEdge)
 
 
             val bitmap = BitmapFactory.decodeFileDescriptor(fd, null, options)
@@ -188,7 +206,7 @@ class Camera3 {
         override fun run() {
             if (!initialized.get() || !imageRendering) return
             drawBitmapToSurface()
-            if (imageRendering) camera3Handler.postDelayed(this, 33L)
+            if (imageRendering) camera3Handler.postDelayed(this, FRAME_INTERVAL_MS)
         }
     }
 
@@ -239,16 +257,14 @@ class Camera3 {
         onPlayerStateChangeListener?.invoke(state)
     }
 
-    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int = 1080, reqHeight: Int = 1920): Int {
-        val (height: Int, width: Int) = options.outHeight to options.outWidth
+    private fun calculateInSampleSize(options: BitmapFactory.Options, maxLongEdge: Int): Int {
+        // 旧实现按 reqWidth/reqHeight 双边收紧且循环条件要求两个半边都 >= 预算，
+        // 只有竖图真正受限：横图（高 < 2×reqHeight）一律 inSampleSize=1 全尺寸解码
+        // （4000×3000 = 48MB）。改为按长边对称收紧，语义「不超过」：pow2 粒度最坏
+        // 落到预算一半，但绝不超限、绝不放大小图
+        val longEdge = maxOf(options.outWidth, options.outHeight)
         var inSampleSize = 1
-        if (height > reqHeight || width > reqWidth) {
-            val halfHeight = height / 2
-            val halfWidth = width / 2
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
-                inSampleSize *= 2
-            }
-        }
+        while (longEdge / inSampleSize > maxLongEdge) inSampleSize *= 2
         return inSampleSize
     }
 
