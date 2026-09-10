@@ -19,7 +19,7 @@ LSPosed / libxposed（API 102）的 Android 虚拟摄像头模块。单模块 `:
 
 Kotlin + kotlinx.serialization。**AGP 9 自带 Kotlin 编译器，不加 `org.jetbrains.kotlin.android`**；只额外加两个 Kotlin 编译器插件（`kotlin.plugin.compose`、`kotlin.plugin.serialization`），catalog 里的 `kotlin` 版本只钉这两个插件、不决定编译器版本。UI：Compose + Miuix（`-ui/-squircle/-icons/-blur/-preference` + `-nav`）+ `androidx.navigationevent` + material-icons-extended。**导航是 miuix-nav，不是 androidx navigation3**（`ui/navigation3/` 只是迁移后遗留的包名）。播放：media3-exoplayer（自定义 DataSource）。Hook：libxposed `api` compileOnly + `service` implementation。其他：hiddenapibypass。
 
-**依赖版本唯一真源 = [gradle/libs.versions.toml](gradle/libs.versions.toml)**，坐标/SDK 在 [app/build.gradle](app/build.gradle)；新增依赖一律进 catalog，不在 build.gradle 硬编码版本号（libxposed 两条是历史遗留，触及时顺手迁入 catalog）。SDK：compileSdk 37 / minSdk 34 / targetSdk 36，jvmTarget 21（miuix-nav 的 inline API 要求）。
+**依赖版本唯一真源 = [gradle/libs.versions.toml](gradle/libs.versions.toml)**，坐标/SDK 在 [app/build.gradle](app/build.gradle)；新增依赖一律进 catalog，不在 build.gradle 硬编码版本号（libxposed 两条是历史遗留，触及时顺手迁入 catalog）。SDK：compileSdk 37 / minSdk 33 / targetSdk 36（minSdk 受 `miuix-blur` AAR 自身声明的 33 限制，不能再低），jvmTarget 21（miuix-nav 的 inline API 要求）。
 
 ## 代码地图
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Camera2 Magic</string>
-    <string name="app_description">一个虚拟摄像头，支持 Android 14+</string>
+    <string name="app_description">一个虚拟摄像头，支持 Android 13+</string>
     <string name="home_device_model">机型</string>
     <string name="home_device_system">系统</string>
     <string name="home_device_lsposed">LSPosed</string>
