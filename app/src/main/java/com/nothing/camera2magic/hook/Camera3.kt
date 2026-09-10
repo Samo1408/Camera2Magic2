@@ -65,6 +65,8 @@ class Camera3 {
         private var initialized = AtomicBoolean(false)
         private var player: ExoPlayer? = null
         private var pfd: ParcelFileDescriptor? = null
+        @Volatile
+        private var activeType: MagicType? = null
         private var imageRendering: Boolean = false
         private var cachedBitmap: Bitmap? = null
         private var oesTextureId: Int = 0
@@ -109,44 +111,72 @@ class Camera3 {
 
     fun init() {
         if (!initialized.compareAndSet(false, true)) return
-        oesTextureId = NB.createOESTexture()
-        surfaceTexture = SurfaceTexture(oesTextureId).apply {
-            setDefaultBufferSize(16, 16)
-            setOnFrameAvailableListener({ _ ->
-                NB.notifyFrameAvailable()
-            }, camera3Handler)
-        }
+        // 这个函数跑在 "Camera3" 的 HandlerThread 上，抛到 Looper 就是目标应用直接挂掉；
+        // NB.createOESTexture() 是 native 调用、ExoPlayer.Builder.build() 也会抛，都不能裸着。
+        // 失败后复位 initialized 让下一次 start 能重试（宁可留一份部分资源，也不要从此不再重建管线）
+        runCatching {
+            oesTextureId = NB.createOESTexture()
+            surfaceTexture = SurfaceTexture(oesTextureId).apply {
+                setDefaultBufferSize(16, 16)
+                setOnFrameAvailableListener({ _ ->
+                    NB.notifyFrameAvailable()
+                }, camera3Handler)
+            }
 
-        NB.setSurfaceTexture(surfaceTexture!!)
-        surface = Surface(surfaceTexture)
+            NB.setSurfaceTexture(surfaceTexture!!)
+            surface = Surface(surfaceTexture)
 
-        player = ExoPlayer.Builder(GlobalState.appContext).build().apply {
-            repeatMode = Player.REPEAT_MODE_ALL
-            addListener(playerListener)
+            player = ExoPlayer.Builder(GlobalState.appContext).build().apply {
+                repeatMode = Player.REPEAT_MODE_ALL
+                addListener(playerListener)
+            }
+            Dog.i(TAG, "camera3 client initialized.", SM.enableLog)
+        }.onFailure { e ->
+            initialized.set(false)
+            Dog.e(TAG, "camera3 client init failed: ${e.message}", e, SM.enableLog)
         }
-        Dog.i(TAG, "camera3 client initialized.", SM.enableLog)
     }
 
     fun start(magic: MagicHook, validMedia: ValidMedia) {
         camera3Handler.post {
-            init()
             val (name, type) = validMedia
-            // 旧 fd 先关再赋新值：连续两次 start 之间没有 stop 时旧 fd 会泄漏。
-            // DataSource 在 open 时已 dup 私有副本，关它不影响仍在读的旧播放
-            runCatching { pfd?.close() }
-            pfd = null
-            when (type) {
-                MagicType.LOCAL_VIDEO  -> {
-                    pfd = magic.openRemoteFile(name)
-                    pfd?.let { handleLocalVideo(it) }
-                }
+            if (initialized.get() && activeType != null && activeType != type) {
+                // 活管线上的媒体类型变了（前置图 / 后置视频这种搭配）：按「先拆再起」重建整条管线。
+                // ExoPlayer 与 lockHardwareCanvas 两种生产者不能混挂在同一个 Surface 上；
+                // 同类型切换（换一张图 / 换一个视频）仍走原地换源，不拆管线。
+                stop()
+                camera3Handler.post { openMedia(magic, name, type) }
+                return@post
+            }
+            openMedia(magic, name, type)
+        }
+    }
 
-                MagicType.LOCAL_IMAGE -> {
-                    pfd = magic.openRemoteFile(name)
-                    pfd?.let { handleLocalImage(it) }
-                }
+    private fun openMedia(magic: MagicHook, name: String, type: MagicType) {
+        init()
+        // 旧 fd 先关再赋新值：连续两次 start 之间没有 stop 时旧 fd 会泄漏。
+        // DataSource 在 open 时已 dup 私有副本，关它不影响仍在读的旧播放
+        runCatching { pfd?.close() }
+        pfd = null
+        // openRemoteFile 会抛 FileNotFoundException，而这个 block 跑在 Camera3 的 HandlerThread 上，
+        // 漏到 Looper 就是目标应用直接挂掉（媒体文件被删 / 模块数据被清时就会遇到）
+        when (type) {
+            MagicType.LOCAL_VIDEO -> {
+                pfd = runCatching { magic.openRemoteFile(name) }
+                    .onFailure { Dog.e(TAG, "open remote video failed: ${it.message}", it, SM.enableLog) }
+                    .getOrNull()
+                pfd?.let { handleLocalVideo(it) }
+            }
+
+            MagicType.LOCAL_IMAGE -> {
+                pfd = runCatching { magic.openRemoteFile(name) }
+                    .onFailure { Dog.e(TAG, "open remote image failed: ${it.message}", it, SM.enableLog) }
+                    .getOrNull()
+                pfd?.let { handleLocalImage(it) }
             }
         }
+        // 只在真的拿到帧源时记类型；失败时保持原值，下次同类型重起仍是原地换源
+        if (pfd != null) activeType = type
     }
 
     @OptIn(UnstableApi::class)
@@ -234,6 +264,7 @@ class Camera3 {
             camera3Handler.removeCallbacks(imageRenderRunnable)
             player?.release()
             releaseResources()
+            activeType = null
             initialized.set(false)
         }
     }

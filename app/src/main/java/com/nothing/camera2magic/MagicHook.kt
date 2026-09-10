@@ -27,7 +27,7 @@ class MagicHook : XposedModule() {
         val remotePrefs = getRemotePreferences("camera_magic_config")
         SM.init(remotePrefs)
         // 入口可观测点：受 main_enable_log 门控，不可改常开（同 refreshPrefs 的指纹约束）
-        Dog.i(TAG, "process=${GlobalState.processName}, hookEnabled=${SM.readyForHook}, media=${SM.validMedia?.type?.label ?: "none"}", SM.enableLog)
+        Dog.i(TAG, "process=${GlobalState.processName}, appEnabled=${SM.appEnabled}, readyForHook=${SM.readyForHook}, media=${SM.validMedia?.type?.label ?: "none"}", SM.enableLog)
         Application::class.java.onCreateHook()
         Camera1Hooker(this, param)
         Camera2Hooker(this, param)

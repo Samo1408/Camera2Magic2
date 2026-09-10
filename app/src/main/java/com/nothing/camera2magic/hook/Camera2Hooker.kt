@@ -20,6 +20,7 @@ import com.nothing.camera2magic.hook.BlackHole.gocBlackHole
 import com.nothing.camera2magic.hook.SourceManager as SM
 import com.nothing.camera2magic.hook.NativeBridge as NB
 import com.nothing.camera2magic.utils.Dog
+import com.nothing.camera2magic.utils.LensSlot
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.lang.ref.WeakReference
 import java.util.Collections
@@ -40,6 +41,10 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
         private var activatedCamera = WeakReference<Any>(null)
         private val camera3Map: MutableMap<Any, Camera3> =
             Collections.synchronizedMap(WeakHashMap<Any, Camera3>())
+        // 相机→镜头槽位：onOpened 时算一次，onConfigured（真正下发媒体的地方）查表。
+        // 不在 onConfigured 里重查特征：那次查询会抛 CameraAccessException，而且拿到的是逻辑相机
+        private val slotMap: MutableMap<Any, LensSlot> =
+            Collections.synchronizedMap(WeakHashMap<Any, LensSlot>())
         // 与 hookedClasses 一样必须同步：会话创建/addTarget 可能在相机线程写入，
         // 而 onClosed/onConfigured 会在另一线程遍历，裸 WeakHashMap 会抛 CME
         private val extraRenderTargets: MutableSet<Surface> =
@@ -84,22 +89,39 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
         @Suppress("DEPRECATION")
         val rotation = wm.defaultDisplay.rotation
         val sensorOri = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        val facingFront = characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+        val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+        val facingFront = facing == CameraCharacteristics.LENS_FACING_FRONT
+        val slot = LensSlot.ofFront(facingFront)
+        slotMap[this] = slot
+        // 激活槽位必须在这里（onOpened）而不能只靠 onConfigured：createCaptureSession 里的
+        // 换面决策早于 onConfigured，拖到那时才能切槽的话，「这一路没配媒体」会跟着上一路的媒体走
+        SM.activateSlot(slot)
         SM.rememberCameraBaseData(2, facingFront, sensorOri, rotation * 90, processName)
         SM.applyManualRotationToNative()
         activatedCamera = WeakReference(this)
+        // 镜头分布诊断：「这台机器几颗、这个 App 用的是哪颗 id、是不是逻辑聚合」一次 logcat 即可看清。
+        // LENS_INFO_* 在多数机型上属于需 CAMERA 权限的受限键，只有在目标进程里才读得到
+        runCatching {
+            val focal = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.joinToString(",")
+            val physical = characteristics.physicalCameraIds.joinToString(",")
+            Dog.i(TAG, "lens: id=$cameraId slot=${slot.id} facing=$facing sensor=$sensorOri focal=[$focal] physical=[$physical]", SM.enableLog)
+        }.onFailure { Dog.e(TAG, "lens diag failed: ${it.message}", it, SM.enableLog) }
     }
 
     private fun Class<*>.onOpenedHook() {
         val onOpened = getDeclaredMethod("onOpened", CameraDevice::class.java)
         magic.hook(onOpened).intercept { chain ->
-            if (!SM.readyForHook) return@intercept chain.proceed()
+            // 记账路径用 appEnabled：readyForHook 里现在掺了「当前镜头有没有媒体」，
+            // 换到没配媒体的镜头时如果连记账-data-ActivatedCamera 一起跳过，
+            // 上一轮被换走的面与原生目标表就没人清理了
+            if (!SM.appEnabled) return@intercept chain.proceed()
             // 铁律2：appContext 可能未初始化，getCameraCharacteristics 也会抛
             // CameraAccessException，未兜底就是目标应用闪退
             runCatching {
                 val camera = chain.args[0] as CameraDevice
                 camera.updateBaseData()
-                Dog.w(TAG, "API[2] open camera: ${camera.shortId}", SM.enableLog)
+                Dog.w(TAG, "API[2] open camera: ${camera.shortId}, readyForHook=${SM.readyForHook}", SM.enableLog)
             }.onFailure { Dog.e(TAG, "onOpened failed: ${it.message}", it, SM.enableLog) }
             return@intercept chain.proceed()
         }
@@ -172,6 +194,8 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                 synchronized(extraRenderTargets) {
                     extraRenderTargets.forEach { NB.addRenderTarget(it) }
                 }
+                // 先把媒体切到这台相机所属槽再下发；双摄同开时后配置的那路接管单一帧源
+                SM.activateSlot(slotMap[camera])
                 SM.validMedia?.let {
                     val camera3 = Camera3()
                     camera3Map[camera] = camera3
@@ -353,7 +377,10 @@ class Camera2Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
     private fun Class<*>.removeTargetHook() {
         val removeTarget = getDeclaredMethod("removeTarget", Surface::class.java)
         magic.hook(removeTarget).intercept { chain ->
-            if (!SM.readyForHook) return@intercept chain.proceed()
+            // 这是**清理**路经（把 BlackHole 映射回原面交给原实现），按铁律 1 绝不判替换门控：
+            // 会话建立时配着媒体、中途媒体被清（readyForHook 变 false）时，
+            // 不映射就会拿 origin 去删一个实际存在表里的 BlackHole，删不掉 → 永久泄漏
+            if (!SM.appEnabled) return@intercept chain.proceed()
             val oab = runCatching {
                 val origin = chain.args[0] as Surface
                 val (width, height, format) = NB.getSurfaceInfo(origin)

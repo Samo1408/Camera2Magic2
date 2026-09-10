@@ -4,6 +4,8 @@ import android.content.SharedPreferences
 import android.net.Uri
 import androidx.core.content.edit
 import com.nothing.camera2magic.utils.Dog
+import com.nothing.camera2magic.utils.LensKeys
+import com.nothing.camera2magic.utils.LensSlot
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -128,6 +130,20 @@ class ConfigRepository(private val prefs: SharedPreferences) {
         }
     }
 
+    /**
+     * 批量双写：一次本地 edit + 一次远程 edit。[save] 是每键一次 binder 事务，
+     * 「要么全成、要么没发生」这种成组写入（例如旧配置迁移）摊成十几个事务会在组合期掉帧。
+     */
+    private fun saveBatch(entries: List<Pair<String, Any?>>) {
+        prefs.edit { entries.forEach { (key, value) -> putAny(key, value) } }
+        safeExecute { service ->
+            service.getRemotePreferences(GROUP_NAME).edit {
+                entries.forEach { (key, value) -> putAny(key, value) }
+            }
+            Dog.i(TAG, "remote saved ${entries.size} keys in one batch")
+        }
+    }
+
     fun getScopeAppList(): List<String>? {
         return safeExecute(null) { it.scope }
     }
@@ -241,33 +257,98 @@ class ConfigRepository(private val prefs: SharedPreferences) {
         }
     }
 
-    fun getAppMediaMode(packageName: String): String =
-        prefs.getString("app_media_mode_$packageName", "photo") ?: "photo"
+    // 旧版不分镜头的媒体键：只读——仅供 migrateLensMediaIfNeeded 取值，不再有写入口。
+    // 不保留 setter 是故意的：迁移完成后槽位键会遮蔽旧键，往旧键写会变成静默不生效的配置。
 
-    fun setAppMediaMode(packageName: String, mode: String) =
-        save("app_media_mode_$packageName", mode)
+    fun getAppMediaMode(packageName: String): String =
+        prefs.getString(LensKeys.legacyMediaMode(packageName), "photo") ?: "photo"
 
     fun getAppPhotoUri(packageName: String): String? =
-        prefs.getString("app_photo_uri_$packageName", null)
-
-    fun setAppPhotoUri(packageName: String, uri: String?) =
-        save("app_photo_uri_$packageName", uri)
+        prefs.getString(LensKeys.legacyPhotoUri(packageName), null)
 
     fun getAppVideoUri(packageName: String): String? =
-        prefs.getString("app_video_uri_$packageName", null)
-
-    fun setAppVideoUri(packageName: String, uri: String?) =
-        save("app_video_uri_$packageName", uri)
+        prefs.getString(LensKeys.legacyVideoUri(packageName), null)
 
     fun getAppRemotePhoto(packageName: String): String? =
-        prefs.getString("app_remote_photo_$packageName", null)
-
-    fun setAppRemotePhoto(packageName: String, fileName: String?) =
-        save("app_remote_photo_$packageName", fileName)
+        prefs.getString(LensKeys.legacyRemotePhoto(packageName), null)
 
     fun getAppRemoteVideo(packageName: String): String? =
-        prefs.getString("app_remote_video_$packageName", null)
+        prefs.getString(LensKeys.legacyRemoteVideo(packageName), null)
 
-    fun setAppRemoteVideo(packageName: String, fileName: String?) =
-        save("app_remote_video_$packageName", fileName)
+    // Per-app config: 镜头槽位（前置/后置各一份媒体，键名单点在 LensKeys）
+
+    fun getAppMediaMode(slot: LensSlot, packageName: String): String =
+        prefs.getString(LensKeys.mediaMode(slot, packageName), "photo") ?: "photo"
+
+    fun setAppMediaMode(slot: LensSlot, packageName: String, mode: String) =
+        save(LensKeys.mediaMode(slot, packageName), mode)
+
+    fun getAppPhotoUri(slot: LensSlot, packageName: String): String? =
+        prefs.getString(LensKeys.photoUri(slot, packageName), null)
+
+    fun setAppPhotoUri(slot: LensSlot, packageName: String, uri: String?) =
+        save(LensKeys.photoUri(slot, packageName), uri)
+
+    fun getAppVideoUri(slot: LensSlot, packageName: String): String? =
+        prefs.getString(LensKeys.videoUri(slot, packageName), null)
+
+    fun setAppVideoUri(slot: LensSlot, packageName: String, uri: String?) =
+        save(LensKeys.videoUri(slot, packageName), uri)
+
+    fun getAppRemotePhoto(slot: LensSlot, packageName: String): String? =
+        prefs.getString(LensKeys.remotePhoto(slot, packageName), null)
+
+    fun setAppRemotePhoto(slot: LensSlot, packageName: String, fileName: String?) =
+        save(LensKeys.remotePhoto(slot, packageName), fileName)
+
+    fun getAppRemoteVideo(slot: LensSlot, packageName: String): String? =
+        prefs.getString(LensKeys.remoteVideo(slot, packageName), null)
+
+    fun setAppRemoteVideo(slot: LensSlot, packageName: String, fileName: String?) =
+        save(LensKeys.remoteVideo(slot, packageName), fileName)
+
+    /** 该远程文件名是否还被任一槽位引用（迁移后两槽可能指向同一个文件，删除前必须判）。 */
+    fun isRemoteMediaReferenced(fileName: String, packageName: String): Boolean =
+        LensSlot.entries.any {
+            getAppRemotePhoto(it, packageName) == fileName || getAppRemoteVideo(it, packageName) == fileName
+        }
+
+    /**
+     * 一次性把旧的「不分镜头」媒体配置展开成前置/后置两份，之后应用配置页只读写槽位键。
+     *
+     * 清旧键是必需的而不是美化：留着它，Hook 侧的旧键回退链会在用户删掉某槽媒体后把旧画面「复活」。
+     * 从没进过应用配置页的应用不迁移，仍由回退链按旧语义跑（两槽共用）。
+     */
+    fun migrateLensMediaIfNeeded(packageName: String) {
+        if (prefs.getBoolean(LensKeys.migrated(packageName), false)) return
+        val mode = getAppMediaMode(packageName)
+        val photo = getAppRemotePhoto(packageName)
+        val video = getAppRemoteVideo(packageName)
+        val photoUri = getAppPhotoUri(packageName)
+        val videoUri = getAppVideoUri(packageName)
+        if (mode == "photo" && photo == null && video == null && photoUri == null && videoUri == null) {
+            // 无旧配置可搬：只落迁移标记，避免每次进页面都重跑一遍写入
+            save(LensKeys.migrated(packageName), true)
+            return
+        }
+        // 成组写入走批量：一次本地 edit + 一次远程 edit，而不是 11 个 binder 事务（这个函数在页面组装期跑）
+        val entries = buildList<Pair<String, Any?>> {
+            LensSlot.entries.forEach { slot ->
+                add(LensKeys.mediaMode(slot, packageName) to mode)
+                add(LensKeys.remotePhoto(slot, packageName) to photo)
+                add(LensKeys.remoteVideo(slot, packageName) to video)
+                add(LensKeys.photoUri(slot, packageName) to photoUri)
+                add(LensKeys.videoUri(slot, packageName) to videoUri)
+            }
+            // 清旧键是语义必需：留着它们，Hook 侧的回退链会把用户删掉的媒体「复活」
+            add(LensKeys.legacyMediaMode(packageName) to null)
+            add(LensKeys.legacyRemotePhoto(packageName) to null)
+            add(LensKeys.legacyRemoteVideo(packageName) to null)
+            add(LensKeys.legacyPhotoUri(packageName) to null)
+            add(LensKeys.legacyVideoUri(packageName) to null)
+            add(LensKeys.migrated(packageName) to true)
+        }
+        saveBatch(entries)
+        Dog.i(TAG, "lens media config migrated: $packageName (mode=$mode photo=$photo video=$video)")
+    }
 }

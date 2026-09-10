@@ -6,6 +6,7 @@
     <string name="home_device_system">系统</string>
     <string name="home_device_lsposed">LSPosed</string>
     <string name="home_device_architecture">架构</string>
+    <string name="home_device_cameras">摄像头</string>
     <string name="nav_home">主页</string>
     <string name="nav_scope">作用域</string>
     <string name="nav_settings">设置</string>
@@ -83,6 +84,9 @@
     <string name="quick_entry_show_toast_summary">在目标应用打开时显示通知</string>
     <string name="app_config_title">应用配置</string>
     <string name="app_config_enable_hook">启用 Hook</string>
+    <string name="app_config_lens">镜头</string>
+    <string name="app_config_lens_back">后置</string>
+    <string name="app_config_lens_front">前置</string>
     <string name="app_config_profile">配置</string>
     <string name="app_config_photo">照片</string>
     <string name="app_config_video">视频</string>

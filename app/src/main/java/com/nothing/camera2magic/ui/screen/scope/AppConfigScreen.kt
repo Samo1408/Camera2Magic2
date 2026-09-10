@@ -65,6 +65,8 @@ import com.nothing.camera2magic.ui.component.ListPopupDefaults
 import com.nothing.camera2magic.ui.component.rememberBlurBackdrop
 import com.nothing.camera2magic.ui.component.rememberConcentricCardRadius
 import com.nothing.camera2magic.utils.MediaPathResolver
+import com.nothing.camera2magic.utils.LensKeys
+import com.nothing.camera2magic.utils.LensSlot
 import com.nothing.camera2magic.viewmodel.ConfigRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -99,6 +101,12 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 private enum class MediaMode { PHOTO, VIDEO }
 
+private fun mediaModeOf(value: String): MediaMode =
+    if (value == "video") MediaMode.VIDEO else MediaMode.PHOTO
+
+/** 一份媒体配置的位置：哪个镜头槽、哪种媒体模式。 */
+private data class MediaTarget(val slot: LensSlot, val mode: MediaMode)
+
 @Composable
 fun AppConfigScreen(
     packageName: String,
@@ -114,24 +122,27 @@ fun AppConfigScreen(
     val scope = rememberCoroutineScope()
 
     var hookEnabled by remember { mutableStateOf(repository.getAppHookEnabled(packageName)) }
-    val initMode = when (repository.getAppMediaMode(packageName)) {
-        "video" -> MediaMode.VIDEO
-        else -> MediaMode.PHOTO
-    }
-    var mediaMode by remember { mutableStateOf(initMode) }
-    var photoUri by remember { mutableStateOf(repository.getAppPhotoUri(packageName)) }
-    var videoUri by remember { mutableStateOf(repository.getAppVideoUri(packageName)) }
-    var photoDisplayPath by remember { mutableStateOf<String?>(null) }
-    var videoDisplayPath by remember { mutableStateOf<String?>(null) }
+    // 旧的「不分镜头」配置先展开成前置/后置两份，此后本页只读写槽位键（否则删不干净，见 migrateLensMediaIfNeeded）
+    remember(packageName) { repository.migrateLensMediaIfNeeded(packageName) }
 
-    LaunchedEffect(photoUri) {
+    // 切换槽位时以 mediaSlot 为 remember key 整体重建下列状态：写操作都是即时落库的，不会丢改动
+    var mediaSlot by remember { mutableStateOf(LensSlot.BACK) }
+    var mediaMode by remember(mediaSlot) {
+        mutableStateOf(mediaModeOf(repository.getAppMediaMode(mediaSlot, packageName)))
+    }
+    var photoUri by remember(mediaSlot) { mutableStateOf(repository.getAppPhotoUri(mediaSlot, packageName)) }
+    var videoUri by remember(mediaSlot) { mutableStateOf(repository.getAppVideoUri(mediaSlot, packageName)) }
+    var photoDisplayPath by remember(mediaSlot) { mutableStateOf<String?>(null) }
+    var videoDisplayPath by remember(mediaSlot) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(mediaSlot, photoUri) {
         photoDisplayPath = photoUri?.let { uriString ->
             withContext(Dispatchers.IO) {
                 MediaPathResolver.resolveDisplayPath(context, uriString.toUri())
             }
         }
     }
-    LaunchedEffect(videoUri) {
+    LaunchedEffect(mediaSlot, videoUri) {
         videoDisplayPath = videoUri?.let { uriString ->
             withContext(Dispatchers.IO) {
                 MediaPathResolver.resolveDisplayPath(context, uriString.toUri())
@@ -139,80 +150,94 @@ fun AppConfigScreen(
         }
     }
 
-    var pendingMediaMode by remember { mutableStateOf<MediaMode?>(null) }
-    // 每模式一个拷贝任务：删除/重选时 cancel 旧任务，防止「删除后拷贝完成又写回远端键」的竞态
-    // copyJob 仍指向本任务（未被 cancel/替换）才回滚，说明失败态对应当前 UI 状态
-    var copyJob by remember { mutableStateOf<Pair<MediaMode, Job>?>(null) }
+    var pendingTarget by remember { mutableStateOf<MediaTarget?>(null) }
+    // 每个「槽位+模式」一份在途拷贝：在一槽上选媒体绝不能掉掉另一槽正在跑的拷贝
+    // （以前是一个全局 copyJob，两槽之后「边传大视频边去设另一槽」会变成常态动作）
+    var copyJobs by remember { mutableStateOf<Map<MediaTarget, Job>>(emptyMap()) }
 
-    fun copyToRemote(uri: Uri, mode: MediaMode) {
-        copyJob?.second?.cancel()
+    fun copyToRemote(uri: Uri, target: MediaTarget) {
+        copyJobs[target]?.cancel()
         val job = scope.launch(Dispatchers.IO) {
+            // 这就是 launch 返回的那个 Job，用来判定「我还是不是这个 target 的当前任务」
+            val self = coroutineContext[Job]
             val mimeType = context.contentResolver.getType(uri)
             val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)
-            val fileName = if (extension != null) "${mode.name.lowercase()}_$packageName.$extension" else "${mode.name.lowercase()}_$packageName"
+            val base = LensKeys.remoteFileBase(target.slot, target.mode.name.lowercase(), packageName)
+            val fileName = if (extension != null) "$base.$extension" else base
             val success = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     repository.prepareRemoteMedia(fileName, input)
                 } ?: false
             }.getOrDefault(false)
             withContext(Dispatchers.Main) {
+                // 未被同 target 的新任务取代才动状态，否则会把后者刚写好的键抹掉
+                val current = copyJobs[target] === self
+                if (current) copyJobs = copyJobs - target
                 if (success) {
-                    when (mode) {
-                        MediaMode.PHOTO -> repository.setAppRemotePhoto(packageName, fileName)
-                        MediaMode.VIDEO -> repository.setAppRemoteVideo(packageName, fileName)
+                    when (target.mode) {
+                        MediaMode.PHOTO -> repository.setAppRemotePhoto(target.slot, packageName, fileName)
+                        MediaMode.VIDEO -> repository.setAppRemoteVideo(target.slot, packageName, fileName)
                     }
-                } else if (copyJob?.first == mode) {
-                    when (mode) {
+                } else if (current) {
+                    when (target.mode) {
                         MediaMode.PHOTO -> {
-                            photoUri = null
-                            repository.setAppPhotoUri(packageName, null)
+                            repository.setAppPhotoUri(target.slot, packageName, null)
+                            // 只有还在展示这一槽时才动本地态：本地态按 mediaSlot 重建，
+                            // 写过头的对象已经是个孤儿，写了也看不到
+                            if (target.slot == mediaSlot) photoUri = null
                         }
                         MediaMode.VIDEO -> {
-                            videoUri = null
-                            repository.setAppVideoUri(packageName, null)
+                            repository.setAppVideoUri(target.slot, packageName, null)
+                            if (target.slot == mediaSlot) videoUri = null
                         }
                     }
                     Toast.makeText(context, context.getString(R.string.app_config_media_copy_failed), Toast.LENGTH_SHORT).show()
                 }
             }
         }
-        copyJob = mode to job
+        copyJobs = copyJobs + (target to job)
     }
 
     val pickMediaLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val mode = pendingMediaMode ?: return@rememberLauncherForActivityResult
-        pendingMediaMode = null
+        val target = pendingTarget ?: return@rememberLauncherForActivityResult
+        pendingTarget = null
         if (uri == null) return@rememberLauncherForActivityResult
         // 部分 ROM 的 Photo Picker URI 不可持久化授权，失败不致命：媒体已被拷贝转存，URI 仅本进程内使用
         runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        when (mode) {
+        when (target.mode) {
             MediaMode.PHOTO -> {
                 photoUri = uri.toString()
-                repository.setAppPhotoUri(packageName, uri.toString())
+                repository.setAppPhotoUri(target.slot, packageName, uri.toString())
             }
             MediaMode.VIDEO -> {
                 videoUri = uri.toString()
-                repository.setAppVideoUri(packageName, uri.toString())
+                repository.setAppVideoUri(target.slot, packageName, uri.toString())
             }
         }
-        copyToRemote(uri, mode)
+        copyToRemote(uri, target)
     }
 
-    // 清空某模式的本地 + 远端媒体状态；拷贝进行中则先取消，避免完成回调把已删除的状态写回
-    fun clearMedia(mode: MediaMode) {
-        copyJob?.takeIf { it.first == mode }?.second?.cancel()
-        when (mode) {
+    // 清空某槽位某模式的本地 + 远端媒体状态；该目标的拷贝在途则先取消，避免完成回调把已删除的状态写回
+    fun clearMedia(target: MediaTarget) {
+        copyJobs[target]?.cancel()
+        copyJobs = copyJobs - target
+        when (target.mode) {
             MediaMode.PHOTO -> {
-                repository.getAppRemotePhoto(packageName)?.let { repository.deleteRemoteMedia(it) }
-                repository.setAppRemotePhoto(packageName, null)
+                repository.getAppRemotePhoto(target.slot, packageName)?.let { file ->
+                    // 先改键再查引用：迁移过来的两槽可能指向同一个文件，还有一个槽在用就绝不能删
+                    repository.setAppRemotePhoto(target.slot, packageName, null)
+                    if (!repository.isRemoteMediaReferenced(file, packageName)) repository.deleteRemoteMedia(file)
+                }
+                repository.setAppPhotoUri(target.slot, packageName, null)
                 photoUri = null
-                repository.setAppPhotoUri(packageName, null)
             }
             MediaMode.VIDEO -> {
-                repository.getAppRemoteVideo(packageName)?.let { repository.deleteRemoteMedia(it) }
-                repository.setAppRemoteVideo(packageName, null)
+                repository.getAppRemoteVideo(target.slot, packageName)?.let { file ->
+                    repository.setAppRemoteVideo(target.slot, packageName, null)
+                    if (!repository.isRemoteMediaReferenced(file, packageName)) repository.deleteRemoteMedia(file)
+                }
+                repository.setAppVideoUri(target.slot, packageName, null)
                 videoUri = null
-                repository.setAppVideoUri(packageName, null)
             }
         }
     }
@@ -304,23 +329,25 @@ fun AppConfigScreen(
                         appLabel = appLabel,
                         hookEnabled = hookEnabled,
                         onHookEnabledChange = { hookEnabled = it; repository.setAppHookEnabled(packageName, it) },
+                        mediaSlot = mediaSlot,
+                        onMediaSlotChange = { mediaSlot = it },
                         mediaMode = mediaMode,
-                        onMediaModeChange = { mediaMode = it; repository.setAppMediaMode(packageName, it.name.lowercase()) },
+                        onMediaModeChange = { mediaMode = it; repository.setAppMediaMode(mediaSlot, packageName, it.name.lowercase()) },
                         photoUri = photoUri,
                         photoDisplayPath = photoDisplayPath,
                         onPhotoUriChange = {
-                            if (it == null) clearMedia(MediaMode.PHOTO)
-                            else { photoUri = it; repository.setAppPhotoUri(packageName, it) }
+                            if (it == null) clearMedia(MediaTarget(mediaSlot, MediaMode.PHOTO))
+                            else { photoUri = it; repository.setAppPhotoUri(mediaSlot, packageName, it) }
                         },
                         videoUri = videoUri,
                         videoDisplayPath = videoDisplayPath,
                         onVideoUriChange = {
-                            if (it == null) clearMedia(MediaMode.VIDEO)
-                            else { videoUri = it; repository.setAppVideoUri(packageName, it) }
+                            if (it == null) clearMedia(MediaTarget(mediaSlot, MediaMode.VIDEO))
+                            else { videoUri = it; repository.setAppVideoUri(mediaSlot, packageName, it) }
                         },
-                        pendingMediaMode = pendingMediaMode,
+                        pendingTarget = pendingTarget,
                         onPickMedia = { mode ->
-                            pendingMediaMode = mode
+                            pendingTarget = MediaTarget(mediaSlot, mode)
                             pickMediaLauncher.launch(
                                 PickVisualMediaRequest(
                                     when (mode) {
@@ -349,6 +376,8 @@ private fun AppConfigInner(
     appLabel: String,
     hookEnabled: Boolean,
     onHookEnabledChange: (Boolean) -> Unit,
+    mediaSlot: LensSlot,
+    onMediaSlotChange: (LensSlot) -> Unit,
     mediaMode: MediaMode,
     onMediaModeChange: (MediaMode) -> Unit,
     photoUri: String?,
@@ -357,7 +386,7 @@ private fun AppConfigInner(
     videoUri: String?,
     videoDisplayPath: String?,
     onVideoUriChange: (String?) -> Unit,
-    pendingMediaMode: MediaMode?,
+    pendingTarget: MediaTarget?,
     onPickMedia: (MediaMode) -> Unit,
 ) {
     val context = LocalContext.current
@@ -429,6 +458,21 @@ private fun AppConfigInner(
             )
             val modes = listOf(MediaMode.PHOTO, MediaMode.VIDEO)
             val selectedIndex = modes.indexOf(mediaMode)
+            // 镜头槽位固定两个：后置多颗镜头在多数机型上被聚合成同一个逻辑相机，
+            // 变焦时由 HAL 内部换镜头（不重开相机）——按物理镜头分槽在机型间语义不一致
+            val lensItems = listOf(
+                stringResource(R.string.app_config_lens_back),
+                stringResource(R.string.app_config_lens_front),
+            )
+            val slots = listOf(LensSlot.BACK, LensSlot.FRONT)
+            val slotIndex = slots.indexOf(mediaSlot)
+            OverlayDropdownPreference(
+                title = stringResource(R.string.app_config_lens),
+                items = lensItems,
+                selectedIndex = if (slotIndex == -1) 0 else slotIndex,
+            ) {
+                onMediaSlotChange(slots[it])
+            }
             OverlayDropdownPreference(
                 title = stringResource(R.string.app_config_profile),
                 items = list,

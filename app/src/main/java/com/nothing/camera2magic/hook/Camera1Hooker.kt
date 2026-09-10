@@ -23,6 +23,7 @@ import android.util.Size
 import com.nothing.camera2magic.GlobalState
 import com.nothing.camera2magic.hook.BlackHole.gocBlackHole
 import com.nothing.camera2magic.hook.BlackHole.gocBlackHoleTexture
+import com.nothing.camera2magic.utils.LensSlot
 
 @SuppressLint("Recycle")
 class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManager  {
@@ -50,7 +51,10 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
 
     private val openInterceptor: (Chain) -> Any? = intercept@{ chain ->
         val camera = chain.proceed() as? Camera ?: return@intercept null
-        if (!SM.readyForHook) return@intercept camera
+        // 记账/清理路径用 appEnabled（同 Camera2 onOpened）：readyForHook 已掺进「有媒体」，
+        // 在这里判它会让「换到没配媒体的镜头」跳过清理与 activatedCamera 更新，
+        // 上一轮被换走的面就永久泄漏了
+        if (!SM.appEnabled) return@intercept camera
         // 新相机打开时若上一台相机仍未 release（App 泄漏相机），先清掉上一轮的渲染状态：
         // 否则原生引擎会继续往上一轮已废弃的 Surface 渲染，第二拍时直接卡死/闪退。
         val oldCamera = activatedCamera.get()
@@ -66,12 +70,18 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
         activatedCamera = WeakReference(camera)
         facingFront = info.facing == Camera.CameraInfo.CAMERA_FACING_FRONT
         sensorOri = info.orientation
-        Dog.w(TAG, "API[1] open camera: ${camera.shortId}", SM.enableLog)
+        // 换面发生在 setPreviewTexture/setPreviewDisplay/startPreview，所以槽位必须在此刻就切到位
+        SM.activateSlot(LensSlot.ofFront(facingFront))
+        // 外接镜头（facing=2，SDK 37 已无常量）归到后置：非前置即后置是故意的
+        Dog.w(TAG, "API[1] open camera: ${camera.shortId}, id=$cameraId, slot=${LensSlot.ofFront(facingFront).id}, facing=${info.facing}, sensor=${info.orientation}, readyForHook=${SM.readyForHook}", SM.enableLog)
         return@intercept camera
     }
 
     private val previewCallbackInterceptor: (Chain) -> Any? = intercept@ { chain ->
-        if (!SM.readyForHook) return@intercept chain.proceed()
+        // 这里只**安装** onPreviewFrame 的钩子，真正覆写在 onPreviewFrame 里另有门控与 validMedia 判定。
+        // 用 appEnabled 而不是 readyForHook：否则「没配媒体时设的回调」永远不会被注上，
+        // 之后配好媒体也仍不接（Camera1 的 YUV 路径会静默失效）
+        if (!SM.appEnabled) return@intercept chain.proceed()
         val originCallback = chain.args[0] as? Camera.PreviewCallback ?: return@intercept chain.proceed()
         originCallback.javaClass.safeHook { onPreviewFrameHook() }
         chain.proceed()
@@ -180,6 +190,8 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
                     BlackHole.originSurfaces.forEach { surface ->
                         NB.addRenderTarget(surface, vSize.width, vSize.height, pSize.width, pSize.height)
                     }
+                    // 先把媒体切到这台相机所属槽再下发
+                    SM.activateSlot(LensSlot.ofFront(facingFront))
                     SM.validMedia?.let {
                         val camera3 = Camera3()
                         camera3Map[camera] = camera3
@@ -268,11 +280,15 @@ class Camera1Hooker(val magic: MagicHook, param: PackageReadyParam) : HookManage
             Camera.PictureCallback::class.java) // jpeg
 
         magic.hook(takePicture).intercept { chain ->
-            if (!SM.readyForHook) return@intercept chain.proceed()
-            chain.args[3]?.let { cb ->
-                val clazz = (cb as Camera.PictureCallback).javaClass
-                clazz.safeHook { onPictureTakenHook() }
-            }
+            // 同 previewCallbackInterceptor：这一处只负责把 onPictureTaken 注上，
+            // 覆写本身的门控在 onPictureTaken 里。整体 runCatching 是铁律2：
+            // 这里强转失败绝不能把异常抛回目标应用的 takePicture
+            if (SM.appEnabled) runCatching {
+                chain.args[3]?.let { cb ->
+                    val clazz = (cb as Camera.PictureCallback).javaClass
+                    clazz.safeHook { onPictureTakenHook() }
+                }
+            }.onFailure { Dog.e(TAG, "takePicture hook install failed: ${it.message}", it, SM.enableLog) }
             chain.proceed()
         }
     }

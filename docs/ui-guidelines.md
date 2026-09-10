@@ -17,7 +17,7 @@ Compose / Miuix 相关的全部约定与踩坑约束。改 `app/src/main/java/co
 - **`RoundedCornerShape` 的唯一残留是参数豁免**：`AboutScreen` 有 2 处，全部作为 miuix blur API 的 `textureBlur(shape = ...)` 入参（不是手搓 clip/background）。其中毛玻璃卡传的是 `rememberConcentricCardRadius()` 的结果，logo 那处写死 16dp。待 miuix-blur 暴露 squircle Shape 后再迁移；新增 clip/background 零容忍。
 - **卡片圆角同心跟随系统屏幕圆角**：一律用 [rememberConcentricCardRadius](../app/src/main/java/com/nothing/camera2magic/ui/component/ConcentricRadius.kt)（`(rememberNavSystemCornerRadius() - inset).coerceAtLeast(CardDefaults.CornerRadius)`，`inset` 是**参数默认值** 12.dp，全部调用点都用默认值）。下限是 `CardDefaults.CornerRadius` = 16dp，**所以系统圆角 ≤ 28dp 的设备实际恒为 16dp**、同心效果不生效，直屏（radius 0）同样回落 16dp。现存 8 个 `Card(` 调用点全部传了 `cornerRadius`，零硬编码 16dp——新增卡片照做。
 - **`CardSegment` 默认已接入**（`cornerRadius: Dp? = null` → `?: rememberConcentricCardRadius()`），显式传参可覆盖；另有 `topCornerRadius`/`bottomCornerRadius` 可单独覆盖上下两端。
-- **弹出菜单圆角**：库内 `ListPopupContent` 写死 16dp 且未透出参数。裸用 `OverlayListPopup` 时以 `popupModifier = Modifier.squircleClip(rememberConcentricCardRadius())` 外层裁剪补齐（`AppConfigScreen` 的应用菜单即是）；miuix 的 `OverlayDropdownPreference`（6 处）/ `OverlaySpinnerPreference`（1 处）无注入点，暂保持库默认 16dp——**不要本地复刻偏好组件**，等上游透出圆角参数后统一替换。
+- **弹出菜单圆角**：库内 `ListPopupContent` 写死 16dp 且未透出参数。裸用 `OverlayListPopup` 时以 `popupModifier = Modifier.squircleClip(rememberConcentricCardRadius())` 外层裁剪补齐（`AppConfigScreen` 的应用菜单即是）；miuix 的 `OverlayDropdownPreference`（7 处）/ `OverlaySpinnerPreference`（1 处）无注入点，暂保持库默认 16dp——**不要本地复刻偏好组件**，等上游透出圆角参数后统一替换。
 
 ## 页面骨架
 

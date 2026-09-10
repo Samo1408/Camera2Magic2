@@ -5,6 +5,7 @@
     <string name="home_device_system">System</string>
     <string name="home_device_lsposed">LSPosed</string>
     <string name="home_device_architecture">Architecture</string>
+    <string name="home_device_cameras">Cameras</string>
     <string name="nav_home">Home</string>
     <string name="nav_scope">Scope</string>
     <string name="nav_settings">Settings</string>
@@ -82,6 +83,9 @@
     <string name="quick_entry_show_toast_summary">Show a toast notification when the target app opens</string>
     <string name="app_config_title">App Config</string>
     <string name="app_config_enable_hook">Enable Hook</string>
+    <string name="app_config_lens">Lens</string>
+    <string name="app_config_lens_back">Back</string>
+    <string name="app_config_lens_front">Front</string>
     <string name="app_config_profile">Config</string>
     <string name="app_config_photo">Photo</string>
     <string name="app_config_video">Video</string>
