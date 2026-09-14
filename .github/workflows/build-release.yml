@@ -28,19 +28,9 @@ jobs:
       - name: Set up Gradle (cached)
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Decode release keystore
-        env:
-          KEYSTORE_B64: ${{ secrets.CAM2MAGIC_KEYSTORE_B64 }}
-        run: |
-          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/cam2magic.keystore"
-          test -s "$RUNNER_TEMP/cam2magic.keystore"
-
+      
       - name: Build signed release APK
         env:
-          CAM2MAGIC_KEYSTORE: ${{ runner.temp }}/cam2magic.keystore
-          CAM2MAGIC_KEYSTORE_PASSWORD: ${{ secrets.CAM2MAGIC_KEYSTORE_PASSWORD }}
-          CAM2MAGIC_KEY_ALIAS: ${{ secrets.CAM2MAGIC_KEY_ALIAS }}
-          CAM2MAGIC_KEY_PASSWORD: ${{ secrets.CAM2MAGIC_KEY_PASSWORD }}
         run: ./gradlew assembleRelease -x lintVitalRelease
 
       - name: Upload release APK
