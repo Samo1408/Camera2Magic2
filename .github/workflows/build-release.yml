@@ -30,7 +30,7 @@ jobs:
 
       
       - name: Build signed release APK
-        env:
+        
         run: ./gradlew assembleRelease -x lintVitalRelease
 
       - name: Upload release APK
